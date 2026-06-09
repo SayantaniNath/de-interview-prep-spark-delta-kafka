@@ -172,21 +172,7 @@ Structured by interview round order — the thing tested first is built first.
 | Photon-enabled vs standard Databricks Runtime | ⏳ |
 | **Databricks vs Snowflake vs BigQuery** — architecture-level articulation for interviews | ⏳ |
 
-#### Supplementary: Tom Bailey — Snowflake Architecture for Comparison
-*Resource: Tom Bailey Udemy Snowflake course | Est. ~3 hrs skim | Est. timing: Jul 2026*
-*Why: you have Snowflake production experience, but need the architectural vocabulary to articulate Databricks vs Snowflake at interview depth. Databricks interviewers always ask this.*
-
-| Snowflake Topic (architecture-level only — skim for comparison, not syntax) | Status |
-|---|---|
-| Virtual Warehouses: compute/storage separation vs Databricks cluster model | ⏳ |
-| Micro-partitions: automatic clustering vs Delta Z-ORDER | ⏳ |
-| Zero-copy cloning vs Delta time travel and SHALLOW CLONE | ⏳ |
-| Snowpipe (continuous ingestion) vs Auto Loader | ⏳ |
-| Snowflake Time Travel vs Delta time travel mechanics | ⏳ |
-| Snowflake Streams (CDC) vs Delta Change Data Feed | ⏳ |
-| Snowflake Tasks vs Airflow / Databricks Workflows | ⏳ |
-| Snowflake Data Sharing vs Delta Sharing | ⏳ |
-| Snowflake vs Databricks: when each wins (governance-heavy warehouse vs open lakehouse) | ⏳ |
+*Snowflake architecture comparison topics are covered as a full crash course — see **4C: Snowflake Crash Course** (Tue/Thu Sep 1–14).*
 
 ### 2J: Data Modeling
 *Est. start: 2026-07-14 | Est. completion: 2026-07-18*
@@ -241,6 +227,45 @@ Structured by interview round order — the thing tested first is built first.
 | TaskGroup, XComs for inter-task data passing, sensors | ⏳ |
 | Airflow vs Databricks Workflows trade-off articulation | ⏳ |
 | Wire Airflow DAG into Fraud Detection Pipeline as orchestration layer | ⏳ |
+
+### 4C: Snowflake Crash Course ⭐ (Tom Bailey Udemy)
+*Slot: Tue/Thu 1 hr | Est. start: 2026-09-01 | Est. completion: 2026-09-14*
+*Why: production background exists; crash course to solidify architecture vocabulary for "Databricks vs Snowflake" interview Q, and prerequisite for dbt (4D)*
+
+| Topic | Status |
+|---|---|
+| Virtual Warehouses: compute/storage separation, auto-suspend/resume, multi-cluster | ⏳ |
+| Micro-partitions: automatic clustering vs Delta Z-ORDER | ⏳ |
+| Time Travel + Fail-Safe: retention periods, mechanics, how they differ from Delta | ⏳ |
+| Zero-copy cloning vs Delta SHALLOW CLONE | ⏳ |
+| Snowpipe (continuous ingestion) vs Auto Loader — trigger model comparison | ⏳ |
+| Streams (CDC) vs Delta Change Data Feed | ⏳ |
+| Tasks (scheduling) vs Airflow / Databricks Workflows | ⏳ |
+| Data Sharing vs Delta Sharing | ⏳ |
+| VARIANT, FLATTEN, PARSE_JSON — semi-structured data handling | ⏳ |
+| RBAC: roles, users, privilege model | ⏳ |
+| Result cache + query pruning: how Snowflake avoids recompute | ⏳ |
+| Snowflake vs Databricks: when each wins (governance-heavy warehouse vs open lakehouse) | ⏳ |
+
+### 4D: dbt Crash Course
+*Slot: Tue/Thu 1 hr | Est. start: 2026-09-15 | Est. completion: 2026-09-30*
+*Prerequisite: Snowflake (4C). Practice project connects dbt Core to Snowflake.*
+
+| Topic | Status |
+|---|---|
+| Project structure: models/, seeds/, tests/, macros/, snapshots/ | ⏳ |
+| Models: ref(), source(), materialization types (table, view, incremental, ephemeral) | ⏳ |
+| Incremental models: is_incremental() macro, unique_key, merge vs append strategy | ⏳ |
+| Schema tests: not_null, unique, accepted_values, relationships | ⏳ |
+| Custom singular data tests | ⏳ |
+| Snapshots: SCD Type 2 with dbt (timestamp strategy + check strategy) | ⏳ |
+| Seeds: loading CSV reference data | ⏳ |
+| Macros + Jinja templating | ⏳ |
+| dbt docs generate + serve — lineage graph | ⏳ |
+| CLI commands: dbt run, dbt test, dbt debug, dbt deps, dbt compile | ⏳ |
+| profiles.yml: connecting dbt Core to Snowflake | ⏳ |
+| dbt Cloud vs dbt Core trade-offs | ⏳ |
+| Practice project: 3-layer model (staging → intermediate → mart) on Snowflake | ⏳ |
 
 ---
 
@@ -364,6 +389,8 @@ Structured by interview round order — the thing tested first is built first.
 | Aug 11 → Aug 18 | Concurrency round prep (Pillar 3) + CDC Pipeline build | Mon–Fri intensive |
 | Aug 18 → Aug 29 | Databricks Lakehouse + AI Monitor capstone build + DEA cert push | Mon/Wed/Fri + Tue/Thu |
 | Aug 29 → Sep 15 | SD out-loud mocks Phase C (2/week) + Behavioral stories | Flexible |
+| Sep 1 → Sep 14 | Snowflake crash course (4C) — runs Tue/Thu parallel to SD mocks | Tue/Thu |
+| Sep 15 → Sep 30 | dbt crash course (4D) — runs Tue/Thu parallel to portfolio polish | Tue/Thu |
 | Sep 15 → Oct 1 | Portfolio polish + GitHub + Apply | Flexible |
 
 **Ongoing every week:**
