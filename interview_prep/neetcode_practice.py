@@ -54,11 +54,11 @@ print("Two Sum: all tests passed")
 # Time: O(n * k log k) | Space: O(n * k)   k = max word length
 
 def group_anagrams(strs):
-    groups = defaultdict(list)
-    for word in strs:
-        key = "".join(sorted(word))   # "eat" → "aet", "tea" → "aet", "ate" → "aet"
-        groups[key].append(word)
-    return list(groups.values())
+    groups = defaultdict(list)      # dict that auto-creates [] for any new key
+    for word in strs:               # loop through each word in the input list
+        key = "".join(sorted(word)) # sort letters alphabetically → anagram fingerprint: "eat" → "aet"
+        groups[key].append(word)    # add original word to its bucket (all anagrams share the same key)
+    return list(groups.values())    # groups.values() = all buckets; list() wraps them
 
 
 result = group_anagrams(["eat", "tea", "tan", "ate", "nat", "bat"])
