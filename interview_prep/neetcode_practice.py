@@ -1,6 +1,22 @@
 # NeetCode 150 — Arrays & Hashing
 # Run this file to verify your solutions: python3 neetcode_practice.py
 
+# ============================================================
+# BIG O REFERENCE
+# ============================================================
+# Measures how runtime (or memory) grows as input size grows.
+#
+# O(1)        Constant      — dict lookup, array index        1000 items → 1 op
+# O(log n)    Logarithmic   — binary search                   1000 items → ~10 ops
+# O(n)        Linear        — one loop                        1000 items → 1,000 ops
+# O(n log n)  Linearithmic  — sorting                         1000 items → ~10,000 ops
+# O(n²)       Quadratic     — nested loops                    1000 items → 1,000,000 ops
+# O(2ⁿ)       Exponential   — recursion/backtracking          grows astronomically
+#
+# Interview rule of thumb: O(n²) usually fails for array problems. Target O(n) or O(n log n).
+# Two Sum brute force (two loops)     → O(n²)
+# Two Sum hashmap (one loop + lookup) → O(n)   dict lookup is O(1), so n × O(1) = O(n)
+
 from collections import defaultdict
 
 
