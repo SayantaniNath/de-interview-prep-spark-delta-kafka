@@ -898,4 +898,136 @@ Code changes needed| None| None
 
 * * *
 
-Updated 2026-06-09 — added Photon engine (Section 22): JVM limitations, vectorized vs row-at-a-time, SIMD, Photon fallback, comparison with Tungsten/WSCG. Stage 2B fully complete.
+## 23. Delta Lake — the transaction log (_delta_log)
+
+_Stage 2C, Session 1 — 2026-06-12. The single most-asked Databricks DE topic._
+
+### What a Delta table physically is
+
+A Delta table is just **two things in a folder** :
+    
+    
+    my_table/
+    ├── _delta_log/                          ← the transaction log (the "brain")
+    │   ├── 00000000000000000000.json        ← commit 0 (CREATE TABLE)
+    │   ├── 00000000000000000001.json        ← commit 1 (first INSERT)
+    │   ├── 00000000000000000002.json        ← commit 2 (UPDATE)
+    │   ├── ...
+    │   ├── 00000000000000000010.checkpoint.parquet  ← checkpoint at commit 10
+    │   └── _last_checkpoint                 ← pointer to latest checkpoint
+    ├── part-00000-xxxx.parquet              ← data files (immutable!)
+    ├── part-00001-xxxx.parquet
+    └── ...
+
+The Parquet data files are **immutable — never edited in place**. An UPDATE doesn't modify a file; it writes a _new_ file with the changed rows and records in the log "old file removed, new file added". This immutability is what makes time travel, ACID, and concurrent reads possible.
+
+### What's inside a commit JSON
+
+Each numbered JSON file = one atomic commit = a list of **actions** :
+
+Action| Meaning  
+---|---  
+`add`| "This Parquet file is now part of the table" — includes path, size, partition values, and **min/max column stats** (used for data skipping)  
+`remove`| "This file is no longer part of the table" — a _logical_ delete; the physical file stays on disk until VACUUM  
+`metaData`| Schema, partition columns, table properties  
+`protocol`| Min reader/writer version required  
+`commitInfo`| Audit: operation type (WRITE/MERGE/DELETE), timestamp, user, engine  
+  
+Example — an UPDATE that touched one file:
+    
+    
+    {"commitInfo": {"operation": "UPDATE", "timestamp": 1718200000000}}
+    {"remove": {"path": "part-00000-aaa.parquet", "deletionTimestamp": ...}}
+    {"add": {"path": "part-00002-bbb.parquet", "size": 1048576,
+             "stats": "{\"minValues\":{\"amount\":10},\"maxValues\":{\"amount\":950}}"}}
+
+### How a read works
+
+  1. Open `_delta_log/`, read commits 0 → N in order
+  2. Play the actions forward: every `add` puts a file in the live set, every `remove` takes it out
+  3. The result — the set of files alive at version N — is the **snapshot**
+  4. Read only those Parquet files (pruned further by min/max stats)
+
+
+
+**Key mental model:** the table's current state is not stored anywhere — it is _computed_ by replaying the log. The log is the source of truth; Parquet files are just payload.
+
+### Checkpoints — why replay doesn't get slower forever
+
+Replaying 100,000 JSON files would be brutal. So **every 10th commit** Delta writes a `.checkpoint.parquet` — the _entire table state_ (all live files + metadata) collapsed into one Parquet file. A reader then does:
+
+  1. Read `_last_checkpoint` → "latest checkpoint is at version 30"
+  2. Load `00000...030.checkpoint.parquet` (one file = state at v30)
+  3. Replay only the JSON commits after 30 (31, 32, ... N)
+
+
+
+So a read is never more than ~10 JSON replays + 1 checkpoint load, no matter how old the table.
+
+### ACID via optimistic concurrency control (OCC)
+
+Delta has **no lock server**. Writers don't coordinate up front — they assume conflicts are rare (hence "optimistic") and check at commit time:
+
+  1. Writer reads the latest snapshot, say version **12**
+  2. Does all its work — writes new Parquet data files (invisible until committed)
+  3. Tries to commit by creating `00000...013.json` — using an atomic **put-if-absent** operation: it succeeds only if no file with that name exists yet
+  4. If another writer got 13 first: read commit 13, **check for logical conflict** with what it did, and if compatible, retry as commit 14. If truly conflicting → `ConcurrentModificationException`
+
+
+
+Atomicity comes from the fact that **a commit is one file creation** — it either fully appears in the log or doesn't exist at all. Readers never see half a commit, and data files written by an uncommitted writer are invisible because no `add` action references them.
+
+### Which concurrent writes conflict?
+
+Writer A / Writer B| Outcome  
+---|---  
+Append + Append| ✅ Both succeed — new files don't touch each other; loser just re-commits at the next version  
+Append + UPDATE/DELETE (different files)| ✅ Usually fine after retry  
+UPDATE + UPDATE on the **same files**|  ❌ Loser gets ConcurrentModificationException — it based its work on files the winner removed  
+Anything + schema change| ❌ Conflict — snapshot's metaData changed underneath  
+  
+**Contrast with a warehouse:** Snowflake/Postgres use locks/MVCC managed by a server. Delta achieves ACID on dumb object storage (S3/ADLS) purely through the log protocol + atomic file creation. That difference — "how do you get ACID without a database server?" — is exactly what interviewers probe.
+
+### Interview one-liners
+
+  * "A Delta table is immutable Parquet files plus a transaction log. The log is the source of truth — current state is computed by replaying add/remove actions, accelerated by Parquet checkpoints every 10 commits."
+  * "ACID comes from optimistic concurrency: writers prepare data invisibly, then commit by atomically creating the next numbered log file. Two appends both succeed; two updates to the same files — the loser detects the conflict on retry and throws."
+  * "DELETE/UPDATE never modify Parquet in place — they write new files and logically remove old ones, which is also why time travel works."
+
+
+
+### Hands-on lab (Databricks CE)
+    
+    
+    # 1. Create a small Delta table at a Volume path (so you can inspect the log)
+    path = "/Volumes/<catalog>/<schema>/<volume>/delta_lab/tx"
+    spark.range(0, 1000).withColumnRenamed("id", "tx_id").write.format("delta").save(path)
+    
+    # 2. Look at the folder — count data files vs log files
+    display(dbutils.fs.ls(path))
+    display(dbutils.fs.ls(path + "/_delta_log"))
+    
+    # 3. Read commit 0 raw — find the add / metaData / commitInfo actions
+    print(dbutils.fs.head(path + "/_delta_log/00000000000000000000.json"))
+    
+    # 4. Make 11 more commits (append loop) → watch the checkpoint appear at v10
+    for i in range(11):
+        spark.range(i*10, i*10+10).withColumnRenamed("id", "tx_id") \
+            .write.format("delta").mode("append").save(path)
+    display(dbutils.fs.ls(path + "/_delta_log"))   # spot 00000...010.checkpoint.parquet
+    
+    # 5. Audit trail
+    display(spark.sql(f"DESCRIBE HISTORY delta.`{path}`"))
+
+### From-blank checks (answer before reading back)
+
+  1. You run `DELETE FROM tx WHERE tx_id < 100`. Describe exactly what appears in the next commit JSON, and what happens to the old Parquet file.
+  2. A reader starts at version 12 while a writer commits version 13 mid-read. What does the reader see and why?
+  3. Two jobs both MERGE into the same table at the same time. Walk through the OCC steps that decide who wins.
+  4. Why does Delta write checkpoints as Parquet instead of JSON?
+
+
+
+* * *
+
+Updated 2026-06-12 — added Delta Lake transaction log (Section 23): _delta_log anatomy, commit actions, snapshot replay, checkpoints, OCC/ACID, conflict matrix. Stage 2C started.
