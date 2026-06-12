@@ -1030,4 +1030,185 @@ Anything + schema change| ❌ Conflict — snapshot's metaData changed underneat
 
 * * *
 
-Updated 2026-06-12 — added Delta Lake transaction log (Section 23): _delta_log anatomy, commit actions, snapshot replay, checkpoints, OCC/ACID, conflict matrix. Stage 2C started.
+## 24. Delta Lake — time travel, RESTORE, schema enforcement & evolution
+
+### Time travel — how it actually works
+
+Because data files are immutable and `remove` is only logical, **every historical version still physically exists** (until VACUUM). Reading version N = replaying the log only up to commit N:
+
+  1. Find the latest checkpoint ≤ N
+  2. Load it, replay JSON commits from there up to exactly N
+  3. Resulting file set = the table as it was at version N
+
+
+    
+    
+    SELECT * FROM tx VERSION AS OF 12;
+    SELECT * FROM tx TIMESTAMP AS OF '2026-06-10';          -- resolves to last version committed ≤ that time
+    
+    df = spark.read.format("delta").option("versionAsOf", 12).load(path)   -- PySpark
+
+**RESTORE** rolls a table back — but it does NOT delete history. It makes a _new_ commit whose actions re-add the old files and remove the current ones:
+    
+    
+    RESTORE TABLE tx TO VERSION AS OF 12;   -- creates version N+1 that "looks like" v12
+
+**Time travel limits:** you can only travel to versions whose data files still exist (VACUUM deletes them past retention, default 7 days) and whose log entries exist (log JSON cleanup after `delta.logRetentionDuration`, default 30 days). "Why can't I time travel to last month?" → VACUUM ate the files.
+
+**Use cases:** debugging ("what did this row look like before yesterday's job?"), audit/compliance, reproducing ML training data, rollback after a bad write, diffing two versions.
+
+### Schema enforcement (on write)
+
+Delta validates every write against the table's `metaData` schema and **rejects** writes whose schema doesn't match — extra columns, missing required types, incompatible type changes → `AnalysisException`. This is the opposite of a plain data lake, where any job can dump any shape of file into a folder and silently poison downstream readers. Enforcement is what makes the lakehouse "schema-on-write" like a warehouse.
+
+### Schema evolution (deliberate change)
+
+Mechanism| What it allows  
+---|---  
+`.option("mergeSchema", "true")`| Per-write opt-in: **add new columns** (and upcast e.g. int→long). Existing rows get NULL for new columns. Commits a new `metaData` action.  
+`spark.databricks.delta.schema.autoMerge.enabled`| Session-wide auto-merge — needed for schema evolution inside **MERGE INTO** (mergeSchema option doesn't apply to MERGE)  
+`.option("overwriteSchema", "true")` + mode("overwrite")| Nuclear: replace the schema entirely (drop/rename/retype columns). Rewrites the table.  
+`ALTER TABLE ... ADD COLUMN`| Metadata-only — instant, no data rewrite  
+  
+**Interview one-liner:** "Enforcement is the default — bad writes are rejected at commit time. Evolution is opt-in per write with mergeSchema, which only allows safe additive changes; destructive changes need overwriteSchema and a rewrite. Schema lives in the transaction log's metaData action, so a schema change is itself a versioned commit."
+
+## 25. Delta Lake — OPTIMIZE, Z-ORDER, VACUUM & the small files problem
+
+### The small files problem — why it exists and what it costs
+
+Every commit writes new files. A streaming job committing every 30s, or an over-partitioned write (200 shuffle partitions × tiny data), produces thousands of KB-sized files. Costs:
+
+  * **API/IO overhead:** reading 10 GB as 10,000 × 1 MB files = 10,000 S3 GET requests + 10,000 file-open overheads, vs ~80 × 128 MB files. Each open has fixed latency — it dominates at small sizes.
+  * **Driver/planning overhead:** the snapshot tracks every file; more files = bigger log, slower planning, more tasks scheduled.
+  * **Poor compression & stats:** Parquet compresses and encodes per file/row-group; tiny files compress badly and min/max stats prune worse.
+
+
+
+### OPTIMIZE — bin-packing compaction
+    
+    
+    OPTIMIZE tx;                          -- coalesce small files into ~1 GB files
+    OPTIMIZE tx WHERE date = '2026-06-12' -- only a partition (cheaper)
+
+Reads many small files, writes few big ones, commits `remove` (small) + `add` (big). **Data content is identical** — it's a pure file-layout transaction, marked `dataChange=false` so streaming readers don't reprocess it.
+
+**Auto variants (table properties):** `delta.autoOptimize.optimizeWrite` (shuffle before write to emit fewer, bigger files) and `delta.autoOptimize.autoCompact` (post-write mini-OPTIMIZE if too many small files accumulated).
+
+### Z-ORDER — multi-dimensional clustering
+    
+    
+    OPTIMIZE tx ZORDER BY (customer_id, event_date);
+
+During compaction, rows are reordered along a **space-filling curve (Z-curve)** over the chosen columns, so rows with similar values in ALL those columns land in the same files. Result: each file's min/max range for those columns is _narrow_ → data skipping prunes far more files for filters on any of them.
+
+Z-ORDER helps| Z-ORDER doesn't help  
+---|---  
+High-cardinality columns you filter on (customer_id, device_id)| Low-cardinality columns (country with 5 values) — partition instead  
+2–4 columns max — effectiveness drops per added column| Columns never used in WHERE/JOIN predicates  
+Point lookups / selective range filters| Full-table scans — nothing to prune  
+  
+**vs partitioning:** partitioning physically separates directories — perfect pruning but disastrous with high cardinality (one tiny dir per value). Z-ORDER clusters _within_ files — works fine on high-cardinality columns. Rule: partition by low-cardinality (date), Z-ORDER by high-cardinality filter columns.
+
+**Newer alternative — Liquid Clustering** (`CLUSTER BY`): replaces both partitioning and Z-ORDER on recent DBR; incremental, no full rewrite, clustering keys changeable later. Worth name-dropping in interviews.
+
+### VACUUM — physical deletion
+    
+    
+    VACUUM tx;                  -- delete unreferenced files older than 7 days (default)
+    VACUUM tx RETAIN 168 HOURS; -- explicit
+    VACUUM tx DRY RUN;          -- list what would be deleted
+
+  * Deletes files that are **(a) no longer referenced** by the current version **and (b) older than the retention window**
+  * **Time travel beyond the retention window dies** — the files are physically gone
+  * Setting retention < 7 days requires disabling `spark.databricks.delta.retentionDurationCheck.enabled` — the guard exists because in-flight jobs reading an old snapshot would break if its files vanish
+  * VACUUM does NOT shrink the log; log JSON cleanup is separate (`delta.logRetentionDuration`, 30 days)
+
+
+
+### Data skipping + dynamic file pruning (DFP)
+
+**Static data skipping:** every `add` action carries min/max stats for the first 32 columns (`delta.dataSkippingNumIndexedCols`). A query with `WHERE amount > 900` skips any file whose max(amount) ≤ 900 — decided at planning time from the log alone, zero data IO.
+
+**Dynamic file pruning:** same idea but the filter values aren't known until _runtime_ — e.g. `fact JOIN dim ON fact.k = dim.k WHERE dim.region = 'EU'`. There's no literal predicate on fact, so static skipping can't fire. DFP runs the dim side first, collects the surviving join keys, and uses them to prune fact _files_ before scanning (Databricks/Photon feature; pairs with dynamic partition pruning). Classic star-schema accelerator.
+
+## 26. Delta Lake — MERGE INTO mechanics & Change Data Feed
+
+### MERGE INTO — the upsert workhorse
+    
+    
+    MERGE INTO target t
+    USING updates s
+    ON t.id = s.id
+    WHEN MATCHED AND s.deleted = true THEN DELETE
+    WHEN MATCHED THEN UPDATE SET t.amount = s.amount, t.updated_at = s.ts
+    WHEN NOT MATCHED THEN INSERT (id, amount, updated_at) VALUES (s.id, s.amount, s.ts)
+    WHEN NOT MATCHED BY SOURCE THEN DELETE   -- optional third direction (DBR 12.2+)
+
+**Under the hood — two passes:**
+
+  1. **Find touched files:** inner join source ↔ target to identify which target files contain matching rows (file-level, helped by data skipping on the ON keys)
+  2. **Rewrite:** full outer join source ↔ _only those files_ , apply matched/not-matched logic, write replacement files; commit `remove` (touched) + `add` (rewritten) atomically
+
+
+
+Consequences worth saying out loud in an interview: **one matching row in a 1-GB file rewrites the whole file** (write amplification — keep files right-sized); MERGE cost scales with files _touched_ , so clustering/Z-ORDER on the merge keys directly speeds up MERGE; duplicate matches in the source ("multiple source rows matched the same target row") throw an error — dedupe the source first.
+
+**Isolation:** Delta writes are `WriteSerializable` by default — concurrent MERGEs on the same files conflict via OCC (Section 23) and the loser retries or throws.
+
+### Change Data Feed (CDF)
+
+Problem: a downstream job wants _only what changed_ in a table, not a full re-read + diff. CDF makes Delta record row-level changes:
+    
+    
+    ALTER TABLE tx SET TBLPROPERTIES (delta.enableChangeDataFeed = true);
+    
+    SELECT * FROM table_changes('tx', 5, 9);            -- changes between versions 5 and 9
+    SELECT * FROM table_changes('tx', '2026-06-10');     -- or by timestamp
+    
+    spark.readStream.format("delta")                     -- streaming consumption
+         .option("readChangeFeed", "true")
+         .option("startingVersion", 5).table("tx")
+
+Each change row carries `_change_type`, `_commit_version`, `_commit_timestamp`. UPDATE produces **two rows** : `update_preimage` (before) and `update_postimage` (after); plus `insert` and `delete` types.
+
+  * Stored in a `_change_data/` folder next to the data — only for UPDATE/DELETE/MERGE; pure inserts are derived from the add files directly (no extra storage)
+  * Retention follows VACUUM like everything else
+  * **Use cases:** incremental downstream pipelines (gold tables reading only silver's changes), feeding SCD Type 2, audit, replicating to external systems
+
+
+
+**One-liner:** "CDF turns a Delta table into a CDC source: enable a table property and read row-level inserts, deletes, and pre/post-images of updates between any two versions, batch or streaming."
+
+## 27. Delta Sharing & Delta vs Iceberg vs Hudi
+
+### Delta Sharing
+
+**Problem it solves:** sharing live data across organizations historically meant copying (FTP/S3 dumps — stale immediately) or requiring the consumer to be on the same platform (Snowflake-to-Snowflake shares). Delta Sharing is an **open REST protocol** : the provider's sharing server authenticates the recipient and hands out short-lived pre-signed URLs to the underlying Parquet files; the recipient reads them directly with pandas, Spark, Power BI, etc. — **no Databricks account needed, no data copied** , always current, provider keeps governance/audit via Unity Catalog.
+
+### Delta vs Iceberg vs Hudi — transaction log architecture
+
+| Delta Lake| Apache Iceberg| Apache Hudi  
+---|---|---|---  
+Metadata design| **Linear log** of JSON commits + Parquet checkpoints; state = replay| **Snapshot tree:** table metadata file → manifest lists → manifests → data files; each snapshot is a complete self-describing tree, commit = atomic pointer swap in the catalog| **Timeline** of actions (commits, compactions, cleans) + record-level index; two table types  
+Concurrency| OCC via atomic creation of next log file| OCC via atomic catalog pointer swap (catalog is the arbiter)| OCC + MVCC on the timeline  
+Signature strengths| Simplicity, Photon/Databricks integration, CDF, liquid clustering| **Hidden partitioning** (partition by `days(ts)` — queries on ts auto-prune, no partition column in queries) + **partition evolution** (change scheme without rewrite); strong engine neutrality| **Copy-on-Write vs Merge-on-Read** choice: MOR writes row-based delta logs merged at read time → fastest upserts/lowest write latency; built for streaming CDC ingest  
+Weak spots| Historically Databricks-gravity (open-sourced, but best features land on DBR first)| More moving parts (catalog required); small-file pressure from frequent commits| Most operational complexity (compaction tuning); smaller mindshare outside CDC use cases  
+Ecosystem gravity| Databricks| Snowflake, AWS (Athena/Glue), Trino, BigQuery — the "neutral standard"| Uber-born; AWS EMR, streaming-CDC shops  
+  
+**The convergence story (good closing line):** the formats are converging — Delta's UniForm writes Iceberg-readable metadata alongside Delta, Databricks acquired Tabular (Iceberg's creators) in 2024, and XTable translates between all three. The real moat is shifting from the format to the catalog/governance layer (Unity Catalog vs Polaris vs Glue).
+
+### From-blank checks — Sessions 2+ material
+
+  1. VACUUM ran with default retention this morning. A teammate asks for the table as of 10 days ago. Possible? Why?
+  2. A MERGE updates 1 row that lives in a 1-GB file. How much data gets rewritten, and what two log actions appear?
+  3. You filter on `customer_id` (10M distinct values). Partition, Z-ORDER, or both? Justify.
+  4. Streaming job commits every 20 seconds. Name the problem that develops and two fixes.
+  5. Why does CDF store pre-images for UPDATE but nothing extra for INSERT?
+  6. Iceberg query: `WHERE event_ts > '2026-06-01'` prunes partitions even though no partition column is referenced. What feature is this and how does Delta differ?
+  7. "Why did Databricks build Delta Sharing instead of just granting cross-account S3 read access?" — answer like an interview.
+
+
+
+* * *
+
+Updated 2026-06-12 — Stage 2C complete coverage added: Section 23 (transaction log, OCC), 24 (time travel, RESTORE, schema enforcement/evolution), 25 (OPTIMIZE, Z-ORDER, liquid clustering, VACUUM, small files, data skipping + DFP), 26 (MERGE mechanics, CDF), 27 (Delta Sharing, Delta vs Iceberg vs Hudi). All 12 topics from the 2C plan covered.
