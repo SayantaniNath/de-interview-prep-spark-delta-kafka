@@ -100,9 +100,9 @@ Structured by interview round order — the thing tested first is built first.
 | Change Data Feed (CDF): pre-image/post-image for UPDATE, how to enable and consume | ✅ 2026-06-12 |
 | Small files problem: API call math, how OPTIMIZE consolidates | ✅ 2026-06-12 |
 | Dynamic file pruning + data skipping (min/max column statistics) | ✅ 2026-06-12 |
-| Delta Sharing: what problem it solves, how it differs from copying data | ⏳ next session (written up in walkthrough doc §27) |
-| Delta vs Iceberg vs Hudi: transaction log architecture differences, ecosystem split (Databricks/Apple/Uber) | ⏳ next session (written up in walkthrough doc §27) |
-| Hands-on lab: build Delta table in CE, inspect _delta_log, watch checkpoint at v10 (walkthrough doc §23) | ⏳ Monday 2026-06-15 |
+| Delta Sharing: what problem it solves, how it differs from copying data | ✅ 2026-06-15 |
+| Delta vs Iceberg vs Hudi: transaction log architecture differences, ecosystem split (Databricks/Apple/Uber) | ✅ 2026-06-15 |
+| Hands-on lab: build Delta table in CE, inspect _delta_log, watch checkpoint at v10 (walkthrough doc §23) | ✅ 2026-06-15 |
 
 ### 2D: Structured Streaming ⭐
 *Est. start: 2026-06-27 | Est. completion: 2026-07-07*

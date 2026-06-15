@@ -288,3 +288,49 @@ The other 480 files are untouched.
 | OPTIMIZE before large MERGE | Compaction → fewer files → less file-open overhead |
 
 **Interview one-liner:** MERGE rewrites every touched file in full because Parquet is immutable. Partition + Z-ORDER on your merge key to minimize how many files get touched.
+
+---
+
+## Delta Lake — Delta Sharing
+
+**Q: What problem does Delta Sharing solve, and how does it work?**
+
+**Problem:** Sharing a Delta table across teams, companies, or clouds — without copying data, without giving access to your cloud storage, and without requiring the recipient to use Databricks.
+
+**How it works:** The data owner runs a Delta Sharing server (or uses Databricks). The recipient gets a credential file (short-lived token + server URL) and queries the shared table through any Delta Sharing client (Python, Spark, pandas, Power BI). Data stays in the owner's storage — recipients get pre-signed URLs to specific files only.
+
+| | Copy data | Delta Sharing |
+|---|---|---|
+| Data freshness | Stale immediately | Always live |
+| Storage cost | 2x | Owner pays once |
+| Access control | Recipient owns copy | Owner revokes any time |
+| Recipient needs Databricks | No | No |
+
+**Interview one-liner:** Delta Sharing is an open protocol for sharing live Delta tables across clouds and organizations without copying data or requiring the recipient to use Databricks.
+
+---
+
+## Delta vs Iceberg vs Hudi
+
+**Q: What problem do all three solve that plain Parquet on S3 doesn't?**
+
+Plain Parquet has no transaction layer — no ACID, no updates/deletes, no history, no schema enforcement. All three add a transaction log on top of Parquet to solve this.
+
+**Q: What are the key differences between Delta, Iceberg, and Hudi?**
+
+| | Delta Lake | Apache Iceberg | Apache Hudi |
+|---|---|---|---|
+| Transaction log | `_delta_log/` — JSON + Parquet checkpoints | metadata/ — Avro manifest files + snapshot pointers | `.hoodie/` — timeline of commits |
+| Created by | Databricks | Netflix | Uber |
+| Ecosystem | Databricks-native | Neutral — AWS/Google prefer it | Streaming-heavy workloads |
+| Streaming strength | Structured Streaming + Auto Loader | Good, not native | Built for near-real-time upserts |
+| Read engines | Spark, Trino, Flink, DuckDB | Spark, Trino, Flink, Athena, BigQuery | Spark, Flink, Presto |
+
+**Ecosystem split:**
+- **Delta** — on Databricks, or tightest Spark integration needed
+- **Iceberg** — on AWS (Athena, Glue) or GCP, or engine-neutral open standard; Apple uses it at massive scale
+- **Hudi** — high-frequency upserts with low write latency (Uber's use case: trip updates every few seconds)
+
+**Log difference in one sentence:** Iceberg uses Avro manifest files + snapshot pointers in a metadata folder; Delta uses JSON commit files + Parquet checkpoints in `_delta_log/`.
+
+**Interview one-liner:** All three add ACID on top of Parquet. Delta wins on Databricks. Iceberg wins on AWS/GCP and multi-engine shops. Hudi wins for high-frequency streaming upserts.
