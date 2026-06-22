@@ -334,3 +334,130 @@ Plain Parquet has no transaction layer — no ACID, no updates/deletes, no histo
 **Log difference in one sentence:** Iceberg uses Avro manifest files + snapshot pointers in a metadata folder; Delta uses JSON commit files + Parquet checkpoints in `_delta_log/`.
 
 **Interview one-liner:** All three add ACID on top of Parquet. Delta wins on Databricks. Iceberg wins on AWS/GCP and multi-engine shops. Hudi wins for high-frequency streaming upserts.
+
+---
+
+## Spark Cluster Sizing & Partitioning — Classic Interview Question
+
+**Q: 5 executors, 4 cores each, 16 GB memory each. Process a 300 GB dataset. How do you plan partitioning, parallelism, memory, and performance tuning?**
+
+### Step 1 — Resources
+```
+5 × 4 cores  = 20 total task slots
+5 × 16 GB    = 80 GB total memory
+Dataset      = 300 GB
+```
+
+### Step 2 — Input partitioning
+Target 128–200 MB per partition (`maxPartitionBytes = 128 MB`).
+```
+300 GB / 128 MB = ~2,400 input partitions
+2,400 / 20 cores = 120 task waves  ← healthy
+```
+```python
+spark.conf.set("spark.sql.files.maxPartitionBytes", "134217728")
+```
+
+### Step 3 — Shuffle partitions
+Default 200 → 1.5 GB per partition → too large, will spill. Fix: target 200 MB → 1,500 partitions.
+```python
+spark.conf.set("spark.sql.shuffle.partitions", "1500")
+# Or with AQE (Spark 3+):
+spark.conf.set("spark.sql.adaptive.enabled", "true")
+spark.conf.set("spark.sql.shuffle.partitions", "2000")  # AQE coalesces automatically
+```
+
+### Step 4 — Memory breakdown per executor
+| Layer | Amount |
+|---|---|
+| Total heap | 16 GB |
+| Reserved (hardcoded) | 300 MB |
+| Usable heap | ~15.7 GB |
+| Unified pool (execution + storage) — 60% | ~9.4 GB |
+| User memory (UDFs) — 40% | ~6.3 GB |
+| **Per-task unified memory (÷ 4 cores)** | **~2.35 GB/task** |
+
+```python
+spark.conf.set("spark.executor.memoryOverhead", "2g")  # prevent container OOM
+```
+
+### Step 5 — Tuning checklist
+| Lever | When | Action |
+|---|---|---|
+| Broadcast join | Small table < 10 MB | `autoBroadcastJoinThreshold = 10485760` |
+| AQE skew join | Max task >> median in Spark UI | `spark.sql.adaptive.skewJoin.enabled = true` |
+| Salting | groupBy skew or Spark 2.x | See salting section below |
+| Kryo | Always | `spark.serializer = KryoSerializer` |
+| Caching | Dataset reused 2+ times | Cache aggregations only — 300 GB won't fit in 80 GB |
+
+**Interview answer:** "With 20 cores I'd target 2,400 input partitions at 128 MB — 120 task waves. For shuffles I'd set 1,500 partitions to stay at ~200 MB each, or enable AQE to tune dynamically. Each task gets ~2.35 GB of unified memory — enough headroom for 128 MB partitions without spilling. I'd monitor Spark UI for skew and spill, broadcast small tables, and enable AQE skew join as a safety net."
+
+---
+
+## Data Skew — Salting Pattern
+
+**Q: What is data skew, how do you detect it, and how does salting fix it?**
+
+### What is skew?
+One partition holds far more rows than others — usually a hot key in a join or groupBy (e.g. "unknown" customer_id = 40% of rows). One task takes 10× longer; the whole stage waits.
+
+### How to detect
+- Spark UI → Stages → Tasks → sort by Duration: max >> median = skew
+- Shuffle Read Size: Min/Median vs Max — a 16× ratio is textbook skew
+- Many empty partitions (median = 0 B) — data piled into a few buckets
+
+```python
+from pyspark.sql.functions import spark_partition_id, count
+
+df.groupBy(spark_partition_id().alias("partition_id")) \
+  .agg(count("*").alias("row_count")) \
+  .orderBy("row_count", ascending=False) \
+  .show(20)
+```
+
+### Salting — join skew fix
+```python
+from pyspark.sql.functions import col, floor, rand, lit, explode, array, concat
+
+SALT_BUCKETS = 9  # ceil(max_partition_rows / target) = ceil(41468 / 5000)
+
+# Skewed side: append random salt 0..8
+skewed_df = skewed_df.withColumn(
+    "salted_key",
+    concat(col("customer_id"), lit("_"), (floor(rand() * SALT_BUCKETS)).cast("int"))
+)
+
+# Other side: replicate N times with each salt value
+other_df = other_df.withColumn(
+    "salted_key",
+    explode(array([concat(col("customer_id"), lit(f"_{i}")) for i in range(SALT_BUCKETS)]))
+)
+
+result = skewed_df.join(other_df, "salted_key")
+```
+
+### Salting — groupBy skew fix (two-pass)
+```python
+# Pass 1 — partial aggregation with salt
+partial = df.withColumn("salt", (floor(rand() * SALT_BUCKETS)).cast("int")) \
+            .groupBy("customer_id", "salt") \
+            .agg(sum("amount").alias("partial_sum"))
+
+# Pass 2 — final aggregation drops salt
+result = partial.groupBy("customer_id").agg(sum("partial_sum").alias("total_amount"))
+```
+
+### SALT_BUCKETS formula
+```
+SALT_BUCKETS = ceil(max_partition_rows / target_rows_per_partition)
+             = ceil(41468 / 5000) = 9
+```
+
+### AQE vs manual salting
+| | AQE Skew Join | Manual Salting |
+|---|---|---|
+| Effort | Zero — enable config | Code change required |
+| Works for | Joins only (Spark 3+) | Joins + groupBy |
+| Use when | Spark 3+, standard join skew | Spark 2.x, groupBy skew, AQE not available |
+
+**Interview one-liner:** "Salting distributes a hot key across N partitions by appending a random integer — the other side is replicated N times to match. For Spark 3+ I enable AQE first; salting is the fallback for groupBy skew or older clusters."
