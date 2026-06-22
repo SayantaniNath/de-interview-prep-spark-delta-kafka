@@ -359,7 +359,7 @@ Structured by interview round order — the thing tested first is built first.
 | Project | Stack | Est. Build Window | Status |
 |---|---|---|---|
 | **FinFlow — batch pipeline** | PySpark + Pandas + Delta Lake | Ongoing | 🟡 |
-| **AWS FinFlow — Cloud-Native Lakehouse** ⭐ NEW | S3 + Glue (Crawler + ETL) + EMR + Redshift + Lambda + Kinesis + MWAA + Apache Iceberg | Phase 1: Jul 19–28 · Phase 2: Aug 1–11 · Phase 3: Aug 11–18 | ⏳ |
+| **AWS ClinicalFlow — Healthcare Data Lakehouse** ⭐ NEW | Synthea EHR (10yr, 100K patients) + S3 + Glue + EMR + Redshift + Lambda + Kinesis + MWAA + Iceberg + KMS + HIPAA/GDPR compliance layer | Phase 1: Jun 23–Jul 4 · Phase 2: Aug 1–11 · Phase 3: Aug 11–18 | ⏳ |
 | **Fraud Detection Pipeline** ⭐ | Kafka → Structured Streaming → IsolationForest → alert Kafka topic → Delta Lake → Airflow | Aug 1–11 | ⏳ |
 | **CDC Pipeline** | Debezium → Kafka → Delta (CDF enabled) + SCD Type 2 MERGE INTO | Aug 11–18 | ⏳ |
 | **Databricks Lakehouse + AI Monitor** ⭐ | Bronze/Silver/Gold + DLT + Unity Catalog + Airflow + Claude API anomaly detection | Aug 18–29 | ⏳ |
@@ -368,23 +368,30 @@ Structured by interview round order — the thing tested first is built first.
 
 ---
 
-### AWS FinFlow — Cloud-Native Lakehouse: Architecture Spec
-*Same PaySim payments dataset as FinFlow. Same transformations, new AWS execution layer. Covers every service in the "AWS Data Platform Architecture" JD template.*
+### AWS ClinicalFlow — Healthcare Data Lakehouse: Architecture Spec
+*Dataset: **Synthea** synthetic EHR — 100K patients × 10 years → ~50–100M records across patients, encounters, conditions, medications, observations. FHIR R4 JSON format. No credentialing needed; code can be pushed to GitHub.*
+*Why healthcare: HIPAA/GDPR/PHI/PII compliance is a top differentiator for healthcare DE roles and appears in senior architect JDs across all verticals.*
 
-**Services demonstrated:** S3, Glue (Crawler + ETL + Data Catalog), EMR Serverless, Redshift Serverless, Lambda, Kinesis Data Streams, Kinesis Firehose, MWAA, Apache Iceberg, CloudWatch
+**Services demonstrated:** S3 + KMS, Glue (Crawler + ETL + Data Catalog), EMR Serverless, Redshift Serverless, Lambda, Kinesis Data Streams, Kinesis Firehose, MWAA, Apache Iceberg, CloudTrail, CloudWatch
+
+**Compliance layer demonstrated:** HIPAA Safe Harbor de-identification, PHI encryption at rest + in transit, GDPR right to erasure (Iceberg DELETE + VACUUM), consent tracking, audit logging, column-level + row-level access control
 
 #### Data Flow
 
 **Batch path:**
 ```
-S3 (raw/bronze prefix)
-  → ydata-profiling: HTML profile report on raw PaySim data (distributions, nulls, outliers) — run once, informs pipeline design
-  → Glue Crawler → Data Catalog (schema + partition registration)
-  → Glue ETL job (PySpark, Glue 3.0): clean nulls, standardize categories, partition by payment_date
-  → Great Expectations: validate silver layer (row count, null %, amount range, transaction_type values) — suite runs as Glue step; fails job on critical expectation breach
-  → S3 silver (Apache Iceberg format via Glue + Iceberg connector)  ← covers Hudi/Iceberg/Delta tri-fecta
-  → Redshift COPY from S3 → fact_transactions, dim_customer, dim_merchant (gold layer)
-  → EMR Serverless job: monthly_merchant_risk_score (heavy aggregation, runs once, terminates)
+Synthea generator → FHIR R4 JSON bundles (PHI: names, DOBs, SSNs, diagnoses, medications)
+  → S3 raw zone (KMS encrypted at rest, bucket policy: deny non-SSL)
+  → ydata-profiling: HTML profile report (null rates, distributions, record counts per year) — informs ETL design
+  → Glue Crawler → Data Catalog (FHIR resource types as tables: Patient, Encounter, Condition, MedicationRequest, Observation)
+  → Glue ETL — de-identification step (HIPAA Safe Harbor: mask 18 identifiers):
+       patient_name → SHA-256 token | DOB → age bucket (0-17, 18-64, 65+) | zip → 3-digit prefix | SSN → NULL
+  → Great Expectations: validate silver (no SSN regex match, no exact DOB, null % on token fields < 1%) — fails job if PHI leaks
+  → S3 silver (de-identified, Apache Iceberg format)  ← covers Hudi/Iceberg/Delta tri-fecta
+  → dim_patient_consent table: consent given/withdrawn per data use category + effective dates (GDPR)
+  → Redshift COPY → fact_encounters, fact_conditions, dim_patient (token only), dim_medication (gold layer)
+  → Redshift column privileges: analysts see patient_token only; PHI role sees full dim (restricted)
+  → EMR Serverless: 10-year readmission risk aggregation (heavy join across 50M+ rows, terminates after)
 ```
 
 **Streaming path:**
@@ -407,13 +414,17 @@ MWAA DAG:
 #### Build Phases
 
 **Phase 1 — Batch (Jun 23 – Jul 4, Tue/Thu slot freed from Maarek + Fri slot):**
-- S3 bucket: raw/, silver/, gold/ prefixes + lifecycle rules
-- **ydata-profiling** (Session 1, ~30 min): `ProfileReport(df)` on raw PaySim CSV → save HTML to S3 → read distributions, null rates, correlations — informs what to clean in ETL
-- Glue Crawler on raw S3 → Data Catalog table
-- Glue ETL job: clean + enrich + write Iceberg silver layer
-- **Great Expectations** (Session 2, ~1 hr): create expectation suite on silver layer: `expect_column_values_to_not_be_null`, `expect_column_values_to_be_in_set` (transaction_type), `expect_column_mean_to_be_between` (amount) → run as Glue Python step → fails job if critical expectations breach → saves Data Docs HTML to S3
-- Redshift Serverless: COPY from S3, build dim/fact model (reuse FinFlow SQL)
-- EMR Serverless: monthly merchant risk aggregation (1 job, terminate after)
+- Run Synthea: `./run_synthea -p 100000 --years 10` → FHIR R4 JSON + CSV exports (~10GB raw, ~50–100M records)
+- S3 bucket: raw/ (KMS encrypted, deny non-SSL policy), silver/ (de-identified), gold/, audit/ prefixes
+- **ydata-profiling** (Session 1, ~30 min): profile Synthea CSVs → null rates, age distributions, encounter counts per year → HTML report to S3 → informs de-identification design
+- Glue Crawler on FHIR JSON → Data Catalog (Patient, Encounter, Condition, MedicationRequest, Observation tables)
+- Glue ETL — **HIPAA Safe Harbor de-identification step** (Session 2, ~1.5 hr): SHA-256 token for patient_id/name, DOB → age bucket (0-17 / 18-64 / 65+), zip → 3-digit prefix, SSN → NULL, free-text notes → scrubbed
+- **Great Expectations** (Session 3, ~1 hr): silver suite — no SSN regex match, no exact DOB column, null % on patient_token < 1%, encounter row count within ±5% of expected → Data Docs HTML to S3; fails Glue job on breach
+- `dim_patient_consent`: GDPR consent tracking (consent_category, given_at, withdrawn_at, legal_basis)
+- Redshift Serverless: COPY → fact_encounters, fact_conditions, dim_patient (token + age_bucket only), dim_medication
+- Redshift column-level privileges: `analyst` role sees patient_token only; `phi_authorized` role sees full dim_patient
+- CloudTrail enabled: all S3 GET + Redshift query audit → stored in separate audit/ S3 bucket (immutable)
+- EMR Serverless: 10-year readmission risk aggregation across 50M+ rows (1 job, terminate after)
 
 **Phase 2 — Orchestration (Aug 1–11, parallel to Airflow 4B):**
 - Build DAG locally first (Airflow), then deploy same DAG to MWAA
@@ -457,7 +468,7 @@ MWAA DAG:
 | **Total estimate** | **~$50–70** | Acceptable for full AWS DE portfolio project |
 
 #### Interview story
-*"Re-architected FinFlow on AWS: S3 lakehouse with Apache Iceberg tables (Glue ETL + EMR Spark for heavy aggregation), real-time enrichment via Kinesis + Lambda, Redshift gold layer, MWAA-orchestrated DAG with CloudWatch SLA alerting. Full batch + streaming on AWS; same PaySim payments dataset as the PySpark version."*
+*"Built a HIPAA-compliant clinical data lakehouse on AWS: Synthea synthetic EHR data (100K patients, 10 years, ~50M records). Raw FHIR JSON lands encrypted in S3 (KMS). Glue ETL applies HIPAA Safe Harbor de-identification — token, age bucket, zip prefix — before writing Iceberg silver. Great Expectations validates no PHI leaks downstream. Redshift gold layer with column-level privileges: analysts see tokens only, PHI-authorized roles see full records. CloudTrail audit log on all S3 and Redshift access. GDPR right to erasure handled via Iceberg DELETE + VACUUM. MWAA orchestrates the full batch DAG; Kinesis + Lambda handles real-time encounter event streaming."*
 
 ---
 
