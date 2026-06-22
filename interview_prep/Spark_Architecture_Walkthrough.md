@@ -1212,3 +1212,117 @@ Ecosystem gravity| Databricks| Snowflake, AWS (Athena/Glue), Trino, BigQuery —
 * * *
 
 Updated 2026-06-12 — Stage 2C complete coverage added: Section 23 (transaction log, OCC), 24 (time travel, RESTORE, schema enforcement/evolution), 25 (OPTIMIZE, Z-ORDER, liquid clustering, VACUUM, small files, data skipping + DFP), 26 (MERGE mechanics, CDF), 27 (Delta Sharing, Delta vs Iceberg vs Hudi). All 12 topics from the 2C plan covered.
+
+---
+
+## Stage 2D — Structured Streaming
+
+*Session: 2026-06-22*
+
+### §28 Checkpoint — What it stores and why it matters
+
+A checkpoint is a **directory on durable storage** (S3, ADLS, DBFS) that Spark writes to at the end of every micro-batch so a crashed query can resume exactly where it left off.
+
+**Checkpoint directory structure:**
+```
+checkpoint/
+  metadata      ← query ID + config (written once at startup)
+  offsets/      ← what was READ each batch (0, 1, 2, ...)
+  commits/      ← what was SUCCESSFULLY PROCESSED (0, 1, 2, ...)
+  state/        ← aggregation state, watermarks, dedup records
+```
+
+**How exactly-once works (two-phase commit via checkpoint):**
+
+Every micro-batch follows this sequence:
+1. Write `offsets/N` — "I am about to read up to offset N"
+2. Read source data and process
+3. Write output to sink
+4. Write `commits/N` — "batch N is done"
+
+If the job crashes between steps 1 and 4, on restart Spark sees `offsets/N` exists but `commits/N` doesn't → reruns batch N. The sink must be idempotent (Delta handles this automatically via transaction log).
+
+**Consequence of deleting the checkpoint:**
+
+| What's lost | Effect |
+|---|---|
+| `offsets/` | Spark doesn't know where it read to — restarts from beginning or latest |
+| `commits/` | Can't distinguish completed vs in-progress batches → potential duplicates |
+| `state/` | All aggregation state gone — running counts, window sums, dedup history reset to zero → **wrong answers** |
+
+**Rule:** For stateless streams, deleting checkpoint means reprocessing. For stateful streams (aggregations, dedup), it means wrong answers.
+
+---
+
+### §29 Writing Streaming Queries — Patterns
+
+**Stateless filter + write (append mode):**
+```python
+from pyspark.sql.functions import col
+
+spark.readStream \
+    .format("delta") \
+    .load("/data/events") \
+    .filter(col("event_type") == "purchase") \
+    .writeStream \
+    .format("delta") \
+    .option("checkpointLocation", "/checkpoints/purchases") \
+    .outputMode("append") \
+    .start("/data/purchases")
+```
+Why append: simple filter, rows only ever added, never updated → append is the only valid output mode here.
+
+**Stateful windowed aggregation (update mode):**
+```python
+from pyspark.sql.functions import window, col
+
+spark.readStream \
+    .format("kafka") \
+    .option("kafka.bootstrap.servers", "localhost:9092") \
+    .option("subscribe", "payments") \
+    .load() \
+    .groupBy(
+        window(col("timestamp"), "5 minutes"),
+        col("merchant_id")
+    ) \
+    .count() \
+    .writeStream \
+    .format("delta") \
+    .option("checkpointLocation", "/checkpoints/merchant_counts") \
+    .outputMode("update") \
+    .start("/data/merchant_counts")
+```
+`window(col("timestamp"), "5 minutes")` buckets rows into 5-minute time windows based on event time. Result has a `window` column with `{start, end}` struct. Late arrivals → watermarking (§30).
+
+**Output mode summary:**
+
+| Mode | What gets written each batch | When to use |
+|---|---|---|
+| `append` | Only new rows | Stateless (filter, map) — rows never change |
+| `update` | Only rows that changed this batch | Aggregations writing to Delta/Kafka |
+| `complete` | Entire result rewritten every batch | Aggregations writing to memory/console only — expensive |
+
+**Import styles — F.col vs col:**
+```python
+# Style 1 — module alias (preferred in production, explicit origin)
+import pyspark.sql.functions as F
+F.col("merchant_id"), F.window(...)
+
+# Style 2 — direct import (less typing, risk of name collision)
+from pyspark.sql.functions import col, window
+col("merchant_id"), window(...)
+```
+
+---
+
+### Recap questions for next 2D session
+
+1. Name the four folders inside a checkpoint directory and what each stores.
+2. A streaming job has been running for 3 days with windowed aggregations. Someone deletes the checkpoint to "free space." What breaks and why?
+3. You have a simple `filter → write to Delta` pipeline. Which output mode? What if you add a `groupBy().count()`?
+4. Write from blank: Kafka source → filter event_type == "click" → write to Delta with append mode and checkpoint.
+5. What does `window(col("ts"), "10 minutes")` produce in the output schema?
+
+---
+
+*Updated 2026-06-22 — Stage 2D started: §28 Checkpoint (structure, exactly-once two-phase commit, consequence of deletion), §29 Streaming query patterns (stateless append, stateful windowed aggregation with Kafka, output mode comparison, F.col vs col import styles).*
