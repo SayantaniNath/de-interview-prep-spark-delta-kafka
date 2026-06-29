@@ -363,6 +363,15 @@ Structured by interview round order — the thing tested first is built first.
 | Official Databricks practice exam | ⏳ |
 | Skillcertpro / Udemy mocks | ⏳ |
 
+### SnowPro Core Certification
+*Slot: Tue/Thu, after Snowflake crash course (4C) wraps Sep 14 | Target: Sep 28, 2026*
+
+| Resource | Status |
+|---|---|
+| Snowflake crash course 4C (Tom Bailey Udemy) — prerequisite | ⏳ |
+| SnowPro Core practice exams (COF-C02) | ⏳ |
+| Book + sit SnowPro Core exam | ⏳ |
+
 ---
 
 ## PILLAR 7: Projects (4 DE Portfolio Projects)
@@ -531,6 +540,7 @@ MWAA DAG:
 | Aug 29 → Sep 15 | SD out-loud mocks Phase C (2/week) + Behavioral stories | Flexible |
 | Sep 1 → Sep 14 | Snowflake crash course (4C) — runs Tue/Thu parallel to SD mocks | Tue/Thu |
 | Sep 15 → Sep 30 | dbt crash course (4D) — runs Tue/Thu parallel to portfolio polish | Tue/Thu |
+| Sep 15 → Sep 28 | SnowPro Core practice exams → sit exam ~Sep 28 | Tue/Thu |
 | Sep 15 → Oct 1 | Portfolio polish + GitHub + Apply | Flexible |
 
 **Ongoing every week:**
