@@ -164,3 +164,80 @@ df['tier'] = np.where(df['revenue'] > 10_000, 'high', 'low')
 # if/else on one column     → np.where(condition, true_val, false_val)
 # Multiple conditions       → np.select([cond1, cond2], [val1, val2], default=...)
 # Truly complex multi-col   → apply (last resort — Python loop, 10-100x slower)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Topic 4: Exception Handling
+# Taught: 2026-06-30 | Exercises: TODO
+# ══════════════════════════════════════════════════════════════════════════════
+
+# try/except/finally
+try:
+    result = 10 / 0
+except ZeroDivisionError:
+    print("can't divide by zero")
+finally:
+    print("always runs — cleanup goes here")
+
+# catch specific first, generic last
+try:
+    df = pd.read_csv('filepath.csv')
+except FileNotFoundError:
+    print("file not found")
+except pd.errors.ParserError:
+    print("CSV is malformed")
+except Exception as e:
+    print(f"unexpected error: {e}")
+
+# custom exception — lets caller distinguish pipeline errors from library errors
+class DataQualityError(Exception):
+    pass
+
+def validate(df):
+    if df['revenue'].isnull().any():
+        raise DataQualityError("revenue column has nulls")
+
+# context manager — __exit__ closes resource even on crash
+with open('file.csv') as f:
+    data = f.read()
+
+# DB connection pattern
+# try:
+#     conn = get_db_connection()
+#     conn.execute(query)
+# finally:
+#     conn.close()
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Topic 5: Functions Deep-Dive
+# Taught: 2026-06-30 | Exercises: TODO — practice tomorrow
+# ══════════════════════════════════════════════════════════════════════════════
+
+# ── Exercise 1 ── *args and **kwargs ──────────────────────────────────────────
+# Write a function `summarise(*args, **kwargs)` that:
+# - prints the sum of all positional args
+# - prints each keyword argument as "key: value"
+# Call it with: summarise(1, 2, 3, name='Sayantani', role='DE')
+
+
+# ── Exercise 2 ── lambda + map + filter ───────────────────────────────────────
+# You have: revenues = [500, 12000, 300, 8000, 15000]
+# a) Use map to apply a 10% discount to every value (one line)
+# b) Use filter to keep only values above 5000 (one line)
+# c) Chain them: apply discount first, then keep values above 5000 (one line)
+
+
+# ── Exercise 3 ── decorator ───────────────────────────────────────────────────
+# Write a decorator `timer` that prints how long a function takes to run.
+# Apply it to a function `process(n)` that sums range(n).
+# Use the `time` module: time.time() gives current timestamp in seconds.
+# Call process(1_000_000) and see the output.
+
+
+# ── Exercise 4 ── real DE use case ───────────────────────────────────────────
+# Write a function `read_and_filter(filepath, **filters)` that:
+# - reads a CSV into a DataFrame
+# - for each key/value in filters, keeps only rows where df[key] == value
+# - returns the filtered DataFrame
+# Example call: read_and_filter('sales.csv', country='USA', product='Widget')
