@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>P4B Airflow — Orchestration Basics</title>
+<style>
+  :root{--bg:#fbfaf7;--card:#fff;--ink:#1f2328;--muted:#5d6670;--line:#e3e0d8;--accent:#2f6f5e;--accent-soft:#e6f1ed;--warn:#9a5b13;--warn-soft:#fbf0e1;color-scheme:light}
+  @media (prefers-color-scheme:dark){:root{--bg:#16181b;--card:#1e2125;--ink:#e6e6e3;--muted:#9aa2ab;--line:#30343a;--accent:#7cc4ad;--accent-soft:#1f302b;--warn:#e0a85c;--warn-soft:#33281a;color-scheme:dark}}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}
+  main{max-width:820px;margin:0 auto;padding:32px 20px 64px}
+  h1{font-size:1.7rem;margin:0 0 4px}
+  .sub{color:var(--muted);margin:0 0 28px}
+  h2{font-size:1.15rem;margin:36px 0 10px;padding-bottom:6px;border-bottom:1px solid var(--line)}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:16px 18px;margin:12px 0}
+  .callout{background:var(--accent-soft);border-left:4px solid var(--accent);border-radius:6px;padding:12px 16px;margin:14px 0}
+  .warn{background:var(--warn-soft);border-left:4px solid var(--warn);border-radius:6px;padding:12px 16px;margin:10px 0}
+  table{width:100%;border-collapse:collapse;font-size:.95rem}
+  th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+  th{color:var(--muted);font-weight:600}
+  .tw{overflow-x:auto}
+  code{font:13px ui-monospace,SFMono-Regular,Menlo,monospace;background:var(--accent-soft);padding:1px 5px;border-radius:4px}
+  pre{font:13px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;background:var(--card);border:1px solid var(--line);border-radius:8px;padding:12px 14px;overflow-x:auto}
+  ol.steps{list-style:none;padding:0;margin:0;counter-reset:s}
+  ol.steps>li{counter-increment:s;position:relative;padding:14px 16px 14px 56px;background:var(--card);border:1px solid var(--line);border-radius:10px;margin:10px 0}
+  ol.steps>li::before{content:counter(s);position:absolute;left:16px;top:14px;width:28px;height:28px;border-radius:50%;background:var(--accent);color:var(--bg);font-weight:700;display:grid;place-items:center}
+  .tag{display:inline-block;font:12px ui-monospace,Menlo,monospace;color:var(--accent);margin-bottom:2px}
+  .big3{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px}
+  .big3 .card{margin:0}
+  .big3 b{display:block;margin-bottom:4px}
+  .muted{color:var(--muted)}
+</style>
+</head>
+<body>
+<main>
+  <h1>Orchestration, explained simply</h1>
+  <p class="sub">P4B · Airflow · Beginner cheat sheet, using the <code>oracle_to_snowflake_customers.py</code> lab as the example</p>
+
+  <h2>1. What is an orchestrator?</h2>
+  <p>Picture a <b>kitchen manager</b> with a checklist:</p>
+  <pre>1. Chop vegetables
+2. Boil rice          (at the same time as step 1)
+3. Cook curry         (only after 1 is done)
+4. Serve              (only after 2 and 3 are done)
+If anything burns → call me</pre>
+  <div class="callout">The manager <b>doesn't cook</b>. They make sure each step happens <b>in the right order</b>, at the <b>right time</b>, gets <b>retried if it fails</b>, and that someone is <b>told when something goes wrong</b>. Airflow, Talend, Dagster and Prefect are all kitchen managers.</div>
+
+  <div class="tw"><table>
+    <tr><th>Kitchen</th><th>Airflow word</th></tr>
+    <tr><td>The checklist</td><td><b>DAG</b></td></tr>
+    <tr><td>One step ("chop vegetables")</td><td><b>Task</b></td></tr>
+    <tr><td>"Only after step 1"</td><td><b>Dependency</b> (<code>&gt;&gt;</code>)</td></tr>
+    <tr><td>"Every night at 2 a.m."</td><td><b>Schedule</b></td></tr>
+    <tr><td>"Try again if it burns"</td><td><b>Retries</b></td></tr>
+    <tr><td>One evening's cooking</td><td><b>DAG run</b></td></tr>
+    <tr><td>"If anything burns, call me"</td><td><b>Trigger rule</b> (<code>one_failed</code>)</td></tr>
+  </table></div>
+
+  <h2>2. Airflow vs Talend: same idea, different way to write the checklist</h2>
+  <div class="tw"><table>
+    <tr><th></th><th>Talend</th><th>Airflow</th></tr>
+    <tr><td>How you build it</td><td>Draw boxes and arrows in a visual tool</td><td>Write the checklist in Python</td></tr>
+    <tr><td>Good for</td><td>Beginners; seeing the flow</td><td>Flexibility; most tech companies use it</td></tr>
+    <tr><td>Does the heavy lifting?</td><td>Often yes (its own engine moves the data)</td><td>Usually no: it tells Oracle, Snowflake, Spark and others what to do</td></tr>
+  </table></div>
+
+  <h2>3. The lab DAG as a story</h2>
+  <p>A shop keeps customer details in an <b>old notebook</b> (Oracle). Every night a helper copies <b>only the new or changed entries</b> into a <b>new computer system</b> (Snowflake).</p>
+  <pre>start_run ──► stage_customers ──┐
+          └─► stage_addresses ──┴─► validate_and_commit
+   (if any of these fail) ──────────► mark_failed</pre>
+
+  <ol class="steps">
+    <li><span class="tag">start_run</span><br><b>Decide what to copy.</b> The helper checks a sticky note: <i>"Last time I copied everything up to Monday 9 p.m."</i> Now it's Tuesday 9 p.m., so tonight's job is the <b>Mon 9 p.m. → Tue 9 p.m.</b> entries. They write "Tuesday's job: in progress" in a logbook.<br><span class="muted">Sticky note = watermark (<code>ORCH_CONTROL</code>). Logbook = <code>ORCH_AUDIT</code>.</span></li>
+    <li><span class="tag">stage_customers + stage_addresses</span><br><b>Copy to a waiting tray.</b> Two helpers work <b>at the same time</b>. One copies changed customers, the other changes of address. They put the copies in a <b>waiting tray</b> (staging tables), not the real system yet. If a helper drops the papers halfway, they <b>empty their part of the tray and start over</b>, so nothing gets copied twice.</li>
+    <li><span class="tag">validate_and_commit</span><br><b>Check, then file everything at once.</b> The supervisor checks the tray: <i>no duplicates? no blank IDs? does every address belong to a real customer?</i> If everything looks right, they file <b>both</b> piles into the real system <b>and</b> update the sticky note, <b>all in one go</b>. If anything fails partway, <b>nothing</b> is filed and the sticky note stays at Monday.</li>
+    <li><span class="tag">mark_failed</span><br><b>If anything went wrong,</b> someone writes "Tuesday's job: FAILED" in the logbook so people know to look into it.</li>
+  </ol>
+
+  <h2>4. The three ideas that matter</h2>
+  <div class="big3">
+    <div class="card"><b>Only copy what changed</b>Use the sticky note (watermark): rows where <code>start &lt; LAST_UPDATED_DATE ≤ end</code>.</div>
+    <div class="card"><b>Retrying is safe</b>Same window on retry, empty the tray (<code>DELETE … WHERE RUN_ID</code>), redo it. This is called <i>idempotent</i>.</div>
+    <div class="card"><b>All or nothing</b>The data and the sticky note update in <b>one transaction</b>, or neither updates.</div>
+  </div>
+  <div class="callout">If you can explain these three, you understand this pipeline, and most incremental-load pipelines in any tool.</div>
+
+  <h2>5. Two weak spots (good interview talking points)</h2>
+  <div class="warn"><b>Late-committing rows get missed.</b> An Oracle transaction sets <code>LAST_UPDATED_DATE = 10:00:00</code> but only commits at 10:00:05, after the extract ran with <code>end = 10:00:02</code>. The next window starts after 10:00:02, so the row is never picked up. <i>Fix:</i> set <code>end = now − a few minutes</code> (a safety lag), or switch to CDC (change data capture, which reads the database's change log instead of timestamps).</div>
+  <div class="warn"><b>Deletes aren't captured.</b> A watermark only finds inserted and updated rows. If a row is deleted in Oracle, Snowflake never hears about it. <i>Fix:</i> soft-delete flags in the source, CDC, or a periodic full comparison.</div>
+
+  <h2>6. Quick self-check</h2>
+  <div class="card">
+    <p><b>Q1.</b> <code>stage_addresses</code> fails and Airflow retries it. Does the retry copy a different time window? Why not?</p>
+    <p><b>Q2.</b> The customer MERGE succeeds but the address MERGE fails. What is in the target tables afterwards?</p>
+    <p><b>Q3.</b> Why are extract, PUT and COPY in <i>one</i> task instead of three?</p>
+    <p class="muted" style="margin:0">Answers: (1) No. <code>start_run</code> reuses the window saved in <code>ORCH_AUDIT</code> for this run_id. (2) Nothing new. Both MERGEs and the checkpoint are in one transaction, so it rolls back. (3) The temp CSV exists only on the worker machine that wrote it; another task might run on a different worker.</p>
+  </div>
+</main>
+</body>
+</html>
